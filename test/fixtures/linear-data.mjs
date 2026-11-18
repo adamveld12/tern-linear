@@ -8,7 +8,20 @@
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 
-const KIND = { user: 1, team: 2, state: 3, label: 4, issue: 5, comment: 6, relation: 7, project: 8, cycle: 9, org: 10 };
+const KIND = {
+	user: 1,
+	team: 2,
+	state: 3,
+	label: 4,
+	issue: 5,
+	comment: 6,
+	relation: 7,
+	project: 8,
+	cycle: 9,
+	org: 10,
+	milestone: 11,
+	projectStatus: 12,
+};
 
 /** Stable UUID-shaped ids: the first group names the entity kind, the last one its ordinal. */
 export function uuid(kind, ordinal) {
@@ -85,7 +98,122 @@ const TEAMS = [
 	},
 ];
 
-const PROJECTS = [{ name: "Desktop app" }];
+// Project workflow statuses, in board order (`position`).
+const PROJECT_STATUSES = [
+	{ name: "Backlog", type: "backlog", color: "#bec2c8" },
+	{ name: "Planned", type: "planned", color: "#e2e2e2" },
+	{ name: "In Progress", type: "started", color: "#f2c94c" },
+	{ name: "Paused", type: "paused", color: "#0f783c" },
+	{ name: "Completed", type: "completed", color: "#5e6ad2" },
+	{ name: "Canceled", type: "canceled", color: "#95a2b3" },
+];
+
+// Index 0 stays "Desktop app": the issue fixtures reference projects by index. Ages are in ms before `now`; `start` and
+// `target` are day offsets from `now`; milestone `target` is a day offset too.
+const PROJECTS = [
+	{
+		name: "Desktop app",
+		slugId: "a1b2c3d4e5f6",
+		description: "Native desktop client with a fast local index and keyboard-first boards.",
+		content:
+			"## Goals\n\nShip a native desktop client that opens large workspaces instantly.\n\n- Local **issue index** for offline search\n- Keyboard-first board navigation\n- Signed installers for macOS and Windows\n",
+		status: "started",
+		priority: 2,
+		progress: 0.65,
+		health: "onTrack",
+		lead: "grace",
+		creator: "ada",
+		teams: ["ENG", "DES"],
+		start: -30,
+		target: 45,
+		created: 90 * DAY,
+		updated: 2 * 60 * MINUTE,
+		milestones: [
+			{
+				name: "Alpha indexer",
+				description:
+					"The incremental file indexer lands behind a feature flag.\n\n- Handles workspaces with **100k** issues\n- Rebuilds the index in the background",
+				status: "done",
+				progress: 1,
+				target: -10,
+			},
+			{
+				name: "Keyboard & board polish",
+				description: "Every board action gets a shortcut and a visible focus ring.",
+				status: "next",
+				progress: 0.55,
+				target: 14,
+			},
+			{
+				name: "GA release",
+				description: "Signed installers, release notes and the public download page.",
+				status: "unstarted",
+				progress: 0,
+				target: 45,
+			},
+		],
+	},
+	{
+		name: "Mobile companion",
+		slugId: "b2c3d4e5f6a1",
+		description: "Read-mostly mobile app for triage on the go.",
+		content: "## Scope\n\nA companion app for **triage** and notifications.\n\nNo board editing in the first release.",
+		status: "planned",
+		priority: 3,
+		progress: 0.15,
+		health: "atRisk",
+		lead: "ada",
+		creator: "grace",
+		teams: ["DES"],
+		start: 7,
+		target: 120,
+		created: 40 * DAY,
+		updated: 1 * DAY,
+		milestones: [
+			{
+				name: "Prototype review",
+				description: "Clickable prototype reviewed with five design partners.",
+				status: "next",
+				progress: 0.3,
+				target: 21,
+			},
+			{
+				name: "Beta on TestFlight",
+				description: "Invite-only beta with crash reporting enabled.",
+				status: "unstarted",
+				progress: 0,
+				target: 90,
+			},
+		],
+	},
+	{
+		name: "Legacy sync deprecation",
+		slugId: "c3d4e5f6a1b2",
+		description: "Retire the v1 sync endpoint after clients migrate.",
+		content: "## Plan\n\nMigrate every client to v2 sync, then switch off the v1 endpoint.",
+		status: "completed",
+		priority: 4,
+		progress: 1,
+		health: null,
+		lead: "linus",
+		creator: "linus",
+		teams: ["ENG"],
+		start: -80,
+		target: -4,
+		created: 100 * DAY,
+		updated: 3 * DAY,
+		completed: 3 * DAY,
+		milestones: [
+			{
+				name: "Sunset v1 endpoint",
+				description: "The v1 endpoint returns 410 Gone for all clients.",
+				status: "done",
+				progress: 1,
+				target: -4,
+			},
+		],
+	},
+];
 
 const ISSUES = [
 	{
@@ -393,7 +521,7 @@ function build(now) {
 	const users = USERS.map((u, i) => ({ id: uuid("user", i + 1), avatarUrl: null, active: true, ...u }));
 	const userByHandle = new Map(users.map((u) => [u.handle, u]));
 	const organization = { id: uuid("org", 1), name: "Acme", urlKey: "acme" };
-	const projects = PROJECTS.map((p, i) => ({ id: uuid("project", i + 1), name: p.name }));
+	const dayOffset = (days) => new Date(now + days * DAY).toISOString().slice(0, 10);
 
 	let stateOrdinal = 0;
 	let labelOrdinal = 0;
@@ -437,6 +565,42 @@ function build(now) {
 		};
 	});
 	const teamByKey = new Map(teams.map((t) => [t.key, t]));
+
+	const projectStatuses = PROJECT_STATUSES.map((s, position) => ({ id: uuid("projectStatus", position + 1), ...s, position }));
+	let milestoneOrdinal = 0;
+	const projects = PROJECTS.map((p, i) => ({
+		id: uuid("project", i + 1),
+		slugId: p.slugId,
+		name: p.name,
+		description: p.description,
+		content: p.content,
+		priority: p.priority,
+		progress: p.progress,
+		health: p.health,
+		sortOrder: -(i + 1) * 1000,
+		startDate: dayOffset(p.start),
+		targetDate: dayOffset(p.target),
+		statusId: projectStatuses.find((s) => s.type === p.status).id,
+		leadId: userByHandle.get(p.lead).id,
+		creatorId: userByHandle.get(p.creator).id,
+		teamIds: p.teams.map((key) => teamByKey.get(key).id),
+		createdAt: ago(p.created),
+		updatedAt: ago(p.updated),
+		completedAt: p.completed === undefined ? null : ago(p.completed),
+		canceledAt: null,
+		archivedAt: null,
+		milestones: p.milestones.map((m, order) => ({
+			id: uuid("milestone", ++milestoneOrdinal),
+			name: m.name,
+			description: m.description,
+			status: m.status,
+			progress: m.progress,
+			sortOrder: order * 1000,
+			targetDate: dayOffset(m.target),
+			createdAt: ago(p.created),
+			updatedAt: ago(p.updated),
+		})),
+	}));
 
 	const issues = ISSUES.map((spec, i) => {
 		const team = teamByKey.get(spec.team);
@@ -501,6 +665,7 @@ function build(now) {
 		viewerId: users[0].id,
 		organization,
 		users,
+		projectStatuses,
 		projects,
 		teams,
 		issues,

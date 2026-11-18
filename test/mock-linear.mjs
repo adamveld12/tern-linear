@@ -1,4 +1,4 @@
-// A stateful fake of the Linear GraphQL API for the twelve operations in lib/queries.luau.
+// A stateful fake of the Linear GraphQL API for the fifteen operations in lib/queries.luau.
 //
 // Requests are executed by graphql-js against Linear's real SDL (.cache/linear-schema.graphql), so variable coercion,
 // validation errors and the shape of every response follow the documents the plugin sends. Resolvers read and mutate an
@@ -246,6 +246,37 @@ class IssueMatcher {
 	}
 }
 
+/** Evaluates `ProjectFilter` JSON against one project record; supports only what the plugin sends. */
+function projectMatches(db, now, project, filter) {
+	const date = (value) => resolveDate(value, now);
+	for (const [key, condition] of Object.entries(filter ?? {})) {
+		switch (key) {
+			case "and":
+				if (!condition.every((sub) => projectMatches(db, now, project, sub))) return false;
+				break;
+			case "or":
+				if (condition.length > 0 && !condition.some((sub) => projectMatches(db, now, project, sub))) return false;
+				break;
+			case "status": {
+				const status = db.projectStatus(project.statusId);
+				for (const [field, sub] of Object.entries(condition)) {
+					if (field !== "type") throw invalidInput(`The mock does not support ProjectFilter.status.${field}`);
+					if (!compare(status.type, sub)) return false;
+				}
+				break;
+			}
+			case "completedAt":
+			case "canceledAt":
+			case "updatedAt":
+				if (!compare(project[key], condition, date)) return false;
+				break;
+			default:
+				throw invalidInput(`The mock does not support ProjectFilter.${key}`);
+		}
+	}
+	return true;
+}
+
 // ─── data access and views ──────────────────────────────────────────────────
 
 const IDENTIFIER = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
@@ -309,6 +340,12 @@ class Database {
 		}
 		return null;
 	}
+	projectStatus(id) {
+		return this.state_.projectStatuses.find((s) => s.id === id) ?? null;
+	}
+	findProject(idOrSlug) {
+		return this.state_.projects.find((p) => p.id === idOrSlug || p.slugId === idOrSlug) ?? null;
+	}
 	project(id) {
 		return this.state_.projects.find((p) => p.id === id) ?? null;
 	}
@@ -334,6 +371,32 @@ class Database {
 		const issue = this.findIssue(idOrIdentifier);
 		if (!issue) throw notFound("Issue");
 		return issue;
+	}
+
+	projectMilestoneView(milestone) {
+		return { ...milestone, createdAt: iso(milestone.createdAt), updatedAt: iso(milestone.updatedAt) };
+	}
+
+	projectView(project) {
+		return {
+			...project,
+			priorityLabel: PRIORITY_LABELS[project.priority] ?? "No priority",
+			url: `https://linear.app/${this.state_.organization.urlKey}/project/${project.slugId}`,
+			createdAt: iso(project.createdAt),
+			updatedAt: iso(project.updatedAt),
+			completedAt: iso(project.completedAt),
+			canceledAt: iso(project.canceledAt),
+			archivedAt: iso(project.archivedAt),
+			status: this.stateView(this.projectStatus(project.statusId)),
+			lead: this.userView(this.user(project.leadId)),
+			creator: this.userView(this.user(project.creatorId)),
+			teams: (args) => connection(project.teamIds.map((id) => ({ ...this.team(id) })), args),
+			projectMilestones: (args) =>
+				connection(
+					project.milestones.map((m) => this.projectMilestoneView(m)),
+					args,
+				),
+		};
 	}
 
 	// views: plain objects (functions take connection arguments) that graphql-js resolves lazily
@@ -472,6 +535,25 @@ function buildRoot(db, now) {
 				matching.map((issue) => db.issueView(issue)),
 				{ first, after },
 			);
+		},
+
+		projects: ({ filter, first, after, orderBy, includeArchived }) => {
+			matcher.now = now();
+			const key = orderBy === "createdAt" ? "createdAt" : "updatedAt";
+			const matching = db.state_.projects
+				.filter((project) => includeArchived || project.archivedAt === null)
+				.filter((project) => projectMatches(db, matcher.now, project, filter))
+				.sort((a, b) => b[key] - a[key] || (a.id < b.id ? -1 : 1));
+			return connection(
+				matching.map((project) => db.projectView(project)),
+				{ first, after },
+			);
+		},
+
+		project: ({ id }) => {
+			const project = db.findProject(id);
+			if (!project) throw notFound("Project");
+			return db.projectView(project);
 		},
 
 		issue: ({ id }) => db.issueView(db.requireIssue(id)),

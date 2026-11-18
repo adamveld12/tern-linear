@@ -1,5 +1,6 @@
 --!strict
--- The `layer` region: issue drawer (details, inline edit form, relations, comments) and the create dialog.
+-- The `layer` region: issue and project drawers (details, inline edit form, relations, comments, milestones) and the
+-- create dialog.
 -- Pure: reads the block state, never mutates it. Node ids are `<parent id>.<key or index>`, so every ancestor
 -- of a focusable field is keyed and the ids below are constants the controller can focus.
 
@@ -15,6 +16,8 @@ type User = types.User
 type IssueRef = types.IssueRef
 type Relation = types.Relation
 type Comment = types.Comment
+type Project = types.Project
+type ProjectMilestone = types.ProjectMilestone
 type Form = types.Form
 type FormField = types.FormField
 type LinkDraft = types.LinkDraft
@@ -75,7 +78,7 @@ local BUSY_REASON = "Working…"
 local MIN_DRAWER_COLS = 44
 local DRAWER_FRACTION = 0.45
 
--- Span tokens per workflow state type (see ARCHITECTURE.md, Styling rules).
+-- Span tokens per workflow state type and per project status type (see ARCHITECTURE.md, Styling rules).
 local STATE_TOKEN: { [string]: string } = {
 	triage = "info",
 	backlog = "muted",
@@ -84,6 +87,23 @@ local STATE_TOKEN: { [string]: string } = {
 	completed = "success",
 	canceled = "muted",
 	duplicate = "muted",
+	planned = "",
+	paused = "info",
+}
+
+-- Badge tone per project health value.
+local HEALTH_TONES: { [string]: string } = {
+	onTrack = "success",
+	atRisk = "warning",
+	offTrack = "error",
+}
+
+-- Dot token and tooltip per milestone status.
+local MILESTONE_STATUS: { [string]: { label: string, token: string } } = {
+	done = { label = "Done", token = "success" },
+	next = { label = "Next", token = "warning" },
+	overdue = { label = "Overdue", token = "error" },
+	unstarted = { label = "Not started", token = "muted" },
 }
 
 local function with(node: Node, props: { [string]: any }): Node
@@ -121,6 +141,19 @@ local function stateDot(stateType: string): Span
 	return ui.span("●", STATE_TOKEN[stateType])
 end
 
+-- A badge for a project health value ("onTrack", "atRisk", "offTrack"); nil for none or an unknown value.
+function detail.healthBadge(health: string?): Node?
+	if health == nil then
+		return nil
+	end
+	local tone = HEALTH_TONES[health]
+	local label = model.HEALTH_LABELS[health]
+	if tone == nil or label == nil then
+		return nil
+	end
+	return ui.badge(label, tone)
+end
+
 local function findTeam(teams: { Team }, id: string): Team?
 	for _, team in teams do
 		if team.id == id then
@@ -139,6 +172,20 @@ local function currentIssue(state: BlockState): Issue?
 	for _, issue in state.issues do
 		if issue.id == id then
 			return issue
+		end
+	end
+	return nil
+end
+
+local function currentProject(state: BlockState): Project?
+	local id = state.selectedId
+	local full = state.projectDetail
+	if full and full.id == id then
+		return full
+	end
+	for _, project in state.projects do
+		if project.id == id then
+			return project
 		end
 	end
 	return nil
@@ -278,6 +325,16 @@ end
 
 -- ─── Drawer: header, actions, properties ────────────────────────────────────
 
+local function headerNode(title: string, parts: { string }): Node
+	return with(
+		ui.col({
+			with(ui.text({ ui.span(title, "strong") }), { key = "title", role = "linear.title" }),
+			with(muted(table.concat(parts, "  ·  ")), { key = "meta", role = "linear.meta" }),
+		}),
+		{ key = "header", role = "linear.header", gap = "xs" }
+	)
+end
+
 local function headerSection(issue: Issue): Node
 	local parts = { issue.teamKey }
 	local now = os.time()
@@ -286,13 +343,7 @@ local function headerSection(issue: Issue): Node
 	if issue.creator then
 		table.insert(parts, "by " .. userLabel(issue.creator))
 	end
-	return with(
-		ui.col({
-			with(ui.text({ ui.span(issue.title, "strong") }), { key = "title", role = "linear.title" }),
-			with(muted(table.concat(parts, "  ·  ")), { key = "meta", role = "linear.meta" }),
-		}),
-		{ key = "header", role = "linear.header", gap = "xs" }
-	)
+	return headerNode(issue.title, parts)
 end
 
 local function iconButton(key: string, icon: string, title: string, action: string): Node
@@ -879,6 +930,150 @@ local function drawer(state: BlockState, cx: BlockCx, issue: Issue): Node
 	}, children)
 end
 
+-- ─── Project drawer ─────────────────────────────────────────────────────────
+
+local function projectHeader(project: Project): Node
+	local parts: { string } = {}
+	if #project.teams > 0 then
+		local keys: { string } = {}
+		for _, team in project.teams do
+			table.insert(keys, team.key)
+		end
+		table.insert(parts, table.concat(keys, ", "))
+	end
+	local now = os.time()
+	table.insert(parts, "created " .. model.relativeTime(project.createdAt, now))
+	table.insert(parts, "updated " .. model.relativeTime(project.updatedAt, now))
+	if project.creator then
+		table.insert(parts, "by " .. userLabel(project.creator))
+	end
+	return headerNode(project.name, parts)
+end
+
+local function projectActionRow(project: Project): Node
+	local open = ui.button("Open in Linear", {
+		key = "open",
+		role = "linear.open-url",
+		size = "sm",
+		keys = { "o" },
+		actions = { click = "open-url=" .. project.id },
+	})
+	return with(ui.row({ open }), { key = "actions", role = "linear.actions", wrap = true })
+end
+
+local function projectProps(project: Project): Node
+	local status: { Span | string } = { stateDot(project.status.type), "  " .. project.status.name }
+	local percent = model.progressPercent(project.progress)
+	local lead = if project.lead ~= nil then userLabel(project.lead) else "No lead"
+	local rows: { Node } = {
+		propRow("status", "Status", with(ui.text(status), { key = "value" })),
+		propRow("progress", "Progress", with(ui.text(`{percent}%`), { key = "value" })),
+	}
+	local health = detail.healthBadge(project.health)
+	if health ~= nil then
+		table.insert(rows, propRow("health", "Health", with(health, { key = "value" })))
+	end
+	table.insert(rows, propRow("priority", "Priority", with(ui.text(project.priorityLabel), { key = "value" })))
+	table.insert(rows, propRow("lead", "Lead", with(ui.text(lead), { key = "value" })))
+	if #project.teams > 0 then
+		local teams: { string } = {}
+		for _, team in project.teams do
+			table.insert(teams, `{team.key} ({team.name})`)
+		end
+		table.insert(rows, propRow("teams", "Teams", with(ui.text(table.concat(teams, ", ")), { key = "value" })))
+	end
+	if project.startDate ~= nil or project.targetDate ~= nil then
+		local dates = `{project.startDate or "—"} → {project.targetDate or "—"}`
+		table.insert(rows, propRow("dates", "Dates", with(ui.text(dates), { key = "value" })))
+	end
+	return with(ui.col(rows), { key = "props", role = "linear.props", gap = "xs" })
+end
+
+-- The long-form content, else the short summary, else a placeholder once the detail has loaded.
+local function projectDescriptionSection(state: BlockState, project: Project): Node?
+	if not project.detailed and state.detailLoading then
+		return with(ui.col({ loadingLine() }), { key = "description", role = "linear.description-loading" })
+	end
+	local content = project.content
+	local body = if content ~= nil and not isBlank(content) then content else project.description
+	if isBlank(body) then
+		if not project.detailed then
+			return nil
+		end
+		return with(muted("No description"), { key = "description", role = "linear.description-empty" })
+	end
+	return with(ui.md(text.safeMarkdown(body)), { key = "description", role = "linear.description" })
+end
+
+local function milestoneHead(milestone: ProjectMilestone): Node
+	local status = MILESTONE_STATUS[milestone.status] or MILESTONE_STATUS.unstarted
+	local percent = model.progressPercent(milestone.progress)
+	local children: { Node } = {
+		with(ui.text({ ui.span("●", status.token) }), { key = "status", mark = "status", title = status.label }),
+		with(ui.text({ ui.span(milestone.name, "strong") }), { key = "name", grow = 1 }),
+	}
+	if milestone.targetDate ~= nil then
+		table.insert(children, with(muted(milestone.targetDate), { key = "target", mark = "target" }))
+	end
+	table.insert(children, with(muted(`{percent}%`), { key = "percent", mark = "percent" }))
+	return ui.node("row", { key = "head", role = "linear.milestone-head", gap = "sm" }, children)
+end
+
+local function milestoneNode(milestone: ProjectMilestone): Node
+	local children: { Node } = { milestoneHead(milestone) }
+	local description = milestone.description
+	if description ~= nil and not isBlank(description) then
+		local body = ui.md(text.safeMarkdown(description))
+		table.insert(children, with(body, { key = "description", role = "linear.milestone-description" }))
+	end
+	return with(ui.col(children), { key = milestone.id, role = "linear.milestone", gap = "xs" })
+end
+
+local function milestonesSection(state: BlockState, project: Project): Node?
+	local milestones = project.milestones
+	if milestones == nil and not state.detailLoading then
+		return nil
+	end
+	local children: { Node } = { sectionHeading("Milestones", if milestones ~= nil then #milestones else nil) }
+	if milestones == nil then
+		table.insert(children, loadingLine())
+	elseif #milestones == 0 then
+		table.insert(children, with(muted("No milestones"), { key = "none" }))
+	else
+		for _, milestone in milestones do
+			table.insert(children, milestoneNode(milestone))
+		end
+	end
+	return with(ui.col(children), { key = "milestones", role = "linear.milestones" })
+end
+
+local function projectDrawer(state: BlockState, cx: BlockCx, project: Project): Node
+	local children: { Node } = {
+		closeButton(),
+		projectHeader(project),
+		projectActionRow(project),
+		projectProps(project),
+	}
+	local description = projectDescriptionSection(state, project)
+	if description then
+		table.insert(children, description)
+	end
+	local milestones = milestonesSection(state, project)
+	if milestones then
+		table.insert(children, milestones)
+	end
+
+	return ui.node("overlay", {
+		key = "panel",
+		role = "linear.drawer",
+		side = "right",
+		size = drawerSize(cx.cols),
+		head = "Project",
+		meta = project.status.name,
+		["end"] = PANEL .. ".close",
+	}, children)
+end
+
 -- ─── Layer ──────────────────────────────────────────────────────────────────
 
 function detail.layer(state: BlockState, cx: BlockCx): Node?
@@ -887,9 +1082,16 @@ function detail.layer(state: BlockState, cx: BlockCx): Node?
 	if form ~= nil and form.kind == "create" then
 		panel = dialog(state, form)
 	elseif state.drawerOpen and state.selectedId ~= nil then
-		local issue = currentIssue(state)
-		if issue then
-			panel = drawer(state, cx, issue)
+		if state.prefs.scope == "projects" then
+			local project = currentProject(state)
+			if project then
+				panel = projectDrawer(state, cx, project)
+			end
+		else
+			local issue = currentIssue(state)
+			if issue then
+				panel = drawer(state, cx, issue)
+			end
 		end
 	end
 	if panel == nil then

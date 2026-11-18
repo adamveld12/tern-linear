@@ -22,6 +22,9 @@ const EXPECTED = [
 	"IssueRelationDelete",
 	"IssueLookup",
 	"IssuesChanged",
+	"Projects",
+	"Project",
+	"ProjectsChanged",
 ];
 
 /** Extracts `queries.<Name> = [==[ ... ]==]` long strings from Luau source. */
