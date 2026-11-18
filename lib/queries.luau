@@ -177,6 +177,22 @@ queries.Project = [[query Project($id: String!, $milestonesFirst: Int = 50, $mil
   }
 }]]
 
+-- The project's issues for the drawer's milestone tables; paged after `Project`.
+queries.ProjectIssues = [[query ProjectIssues($id: String!, $first: Int = 50, $after: String) {
+  project(id: $id) {
+    issues(first: $first, after: $after) {
+      nodes {
+        id identifier title sortOrder
+        state { name type }
+        team { id }
+        assignee { id name displayName avatarUrl }
+        projectMilestone { id }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}]]
+
 -- Cheap change detection: the most recently updated project under the Projects board's filter.
 queries.ProjectsChanged = [[query ProjectsChanged($filter: ProjectFilter, $includeArchived: Boolean = false) {
   projects(filter: $filter, first: 1, orderBy: updatedAt, includeArchived: $includeArchived) {

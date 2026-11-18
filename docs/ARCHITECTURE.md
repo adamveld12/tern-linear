@@ -42,7 +42,7 @@ local queries = {}
 queries.Viewer = [[query Viewer { ... }]]
 -- Teams, TeamMore, Issues, Issue, IssueCreate, IssueUpdate, CommentCreate,
 -- IssueRelationCreate, IssueRelationDelete, IssueLookup, IssuesChanged,
--- Projects, Project, ProjectsChanged
+-- Projects, Project, ProjectIssues, ProjectsChanged
 return queries
 ```
 
@@ -75,7 +75,8 @@ linear.issue(cfg, id: string, cb: Callback<Issue>)          -- detail; all comme
 linear.projects(cfg, filter: any, cb: Callback<ProjectPage>) -- pages Projects (first 50) up to MAX_PROJECTS = 250
 linear.projectsChangedSince(cfg, filter: any, sinceIso: string?, cb: Callback<string?>)
     -- ProjectsChanged with filter AND {updatedAt: {gt: sinceIso}}; result = newest updatedAt or nil
-linear.project(cfg, id: string, cb: Callback<Project>)      -- detail with content; all milestone pages, sorted
+linear.project(cfg, id: string, cb: Callback<Project>)
+    -- detail with content; all milestone pages, sorted; then ProjectIssues pages up to MAX_PROJECT_ISSUES = 250
 linear.lookup(cfg, identifier: string, cb: Callback<IssueRef?>) -- nil result (no error) when not found
 linear.createIssue(cfg, input: IssueCreateInput, cb: Callback<Issue>)
 linear.updateIssue(cfg, id: string, patch: {[string]: any}, cb: Callback<Issue>)
@@ -88,7 +89,7 @@ linear.rate(): RateInfo
 
 Error classification (`ApiError.kind`): `status == 0` or timeout → `network`; HTTP 401 or `AUTHENTICATION_ERROR` → `auth`; 403 or `FORBIDDEN` → `forbidden`; `RATELIMITED` at any status → `rate` (`retryAfterMs` from `retry-after` seconds, else reset headers minus now, floor 60 000); `Entity not found` / `ENTITY_NOT_FOUND` → `notfound`; `userError == true` or `INPUT_ERROR` → `input` with `userPresentableMessage`; anything else → `server`. A mutation payload with `success == false` is `server`. Messages never include the key.
 
-Normalization: `Issue.relations` merges `relations` (direction `outgoing`) and `inverseRelations` (direction `incoming`); `labels` drops nothing; `assignee` is nil when null (note `tern.json.decode` drops null members). `Team.states` is sorted by `model.STATE_TYPES` rank then `position`; group labels and inactive members are removed. `Project.progress` is clamped to 0..1; `Project.milestones` (detail only) is sorted by `sortOrder`, then `targetDate` (dated first), then `createdAt`, then `id`. `Project.content` is only fetched by `linear.project`. Timeouts: 20 s per request.
+Normalization: `Issue.relations` merges `relations` (direction `outgoing`) and `inverseRelations` (direction `incoming`); `labels` drops nothing; `assignee` is nil when null (note `tern.json.decode` drops null members). `Team.states` is sorted by `model.STATE_TYPES` rank then `position`; group labels and inactive members are removed. `Project.progress` is clamped to 0..1; `Project.milestones` (detail only) is sorted by `sortOrder`, then `targetDate` (dated first), then `createdAt`, then `id`. `Project.content` and `Project.issues` are only fetched by `linear.project`; `Project.issues` is sorted by state type rank, then `sortOrder`, and `issuesTruncated` is set when the cap was reached. Timeouts: 20 s per request.
 
 ### `lib/text.luau`
 
@@ -211,6 +212,8 @@ Views attach `actions = { click = "<act>=<value>" }`. Tern splits at the first `
 | `clear-filters` | priority/assignee/label (or project team/lead) filters and query cleared |
 | `select=<issueId>` | select and open the drawer (a project id in Projects scope) |
 | `close-detail` | close the drawer |
+| `toggle-milestone=<milestoneId>` | expand or collapse a milestone's issue table in the project drawer (`none`: the No milestone group) |
+| `open-issue=<issueId>` | from a milestone table: switch to the issue's team (view chosen so its state type shows, client filters cleared) and open its drawer |
 | `open-url=<issueId>` | `cx:open` only when the issue's (or, in Projects scope, the project's) `url` matches `^https://linear%.app/`; otherwise a notice |
 | `copy-id=<issueId>` / `copy-branch=<issueId>` | `cx:copy` identifier / branch name |
 | `set-state=<stateId>` | update the selected issue's state |
@@ -309,6 +312,7 @@ E2E tests, CSS and screenshots rely on these. Every node listed carries `role` (
 | `linear.description` | markdown | description |
 | `linear.milestones` | project drawer milestones section | heading `Milestones` |
 | `linear.milestone`, `linear.milestone-head`, `linear.milestone-description` | one milestone; its name, target date and percent; its markdown description | |
+| `linear.milestone-toggle`, `linear.milestone-issues`, `linear.milestone-issue`, `linear.milestone-empty` | milestone expand toggle; its issue table; one issue row (ID, title, status, assignee); empty table | `No milestone` group name; `No issues` |
 | `linear.relations` | relations section | `Blocked by`, `Blocks`, `Related` |
 | `linear.link-input` | link input | placeholder `ENG-123` |
 | `linear.comments` | comments section | heading `Comments` |

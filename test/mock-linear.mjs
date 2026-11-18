@@ -349,6 +349,14 @@ class Database {
 	project(id) {
 		return this.state_.projects.find((p) => p.id === id) ?? null;
 	}
+	projectMilestone(id) {
+		if (!id) return null;
+		for (const project of this.state_.projects) {
+			const milestone = project.milestones.find((m) => m.id === id);
+			if (milestone) return milestone;
+		}
+		return null;
+	}
 	issue(id) {
 		return id ? (this.state_.issues.find((i) => i.id === id) ?? null) : null;
 	}
@@ -396,6 +404,16 @@ class Database {
 					project.milestones.map((m) => this.projectMilestoneView(m)),
 					args,
 				),
+			issues: ({ filter, ...args }) => {
+				if (filter && Object.keys(filter).length > 0) throw invalidInput("The mock does not support Project.issues(filter:)");
+				return connection(
+					this.state_.issues
+						.filter((issue) => issue.projectId === project.id && issue.archivedAt === null)
+						.sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)
+						.map((issue) => this.issueView(issue)),
+					args,
+				);
+			},
 		};
 	}
 
@@ -450,6 +468,7 @@ class Database {
 		const creator = this.user(issue.creatorId);
 		const viewer = this.user(this.state_.viewerId);
 		const relatedTo = (field) => this.state_.relations.filter((r) => r[field] === issue.id);
+		const milestone = this.projectMilestone(issue.projectMilestoneId);
 		return {
 			...issue,
 			identifier,
@@ -467,6 +486,7 @@ class Database {
 			assignee: this.userView(this.user(issue.assigneeId)),
 			labels: (args) => connection(issue.labelIds.map((id) => ({ ...this.label(id) })), args),
 			project: this.project(issue.projectId),
+			projectMilestone: milestone && this.projectMilestoneView(milestone),
 			cycle: this.cycleView(issue.cycleId),
 			parent: issue.parentId ? this.issueView(this.issue(issue.parentId)) : null,
 			subscribers: (args) => connection([this.userView(viewer)], args),
@@ -580,6 +600,7 @@ function buildRoot(db, now) {
 				labelIds: input.labelIds ?? [],
 				parentId: resolveRef(input.parentId, "Issue"),
 				projectId: input.projectId ?? null,
+				projectMilestoneId: null,
 				cycleId: input.cycleId ?? null,
 				dueDate: input.dueDate ?? null,
 				sortOrder: -now_,

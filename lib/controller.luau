@@ -197,6 +197,7 @@ local function newState(cx: BlockCx, prefs: Prefs): BlockState
 		selectedId = nil,
 		detail = nil,
 		projectDetail = nil,
+		expandedMilestones = {},
 		detailLoading = false,
 		drawerOpen = false,
 		comment = text.new(""),
@@ -396,6 +397,7 @@ local function clearSelection(state: BlockState, run: Run)
 	state.selectedId = nil
 	state.detail = nil
 	state.projectDetail = nil
+	state.expandedMilestones = {}
 	text.set(state.comment, "")
 end
 
@@ -669,6 +671,7 @@ local function selectIssue(state: BlockState, run: Run, id: string, open: boolea
 		dropDrawerInputs(state, run)
 		supersedeDetail(state, run)
 		dropStaleDetail(state, id)
+		state.expandedMilestones = {}
 	end
 	local wasOpen = state.drawerOpen
 	if open then
@@ -1966,6 +1969,43 @@ local function itemUrl(state: BlockState, id: string): string?
 	return if issue ~= nil then issue.url else nil
 end
 
+-- The view whose state types include `stateType`: the current one when it does, else active, backlog, all.
+local function viewFor(current: "active" | "backlog" | "all", stateType: string): "active" | "backlog" | "all"
+	if table.find(model.viewTypes(current), stateType) ~= nil then
+		return current
+	elseif table.find(model.viewTypes("active"), stateType) ~= nil then
+		return "active"
+	elseif table.find(model.viewTypes("backlog"), stateType) ~= nil then
+		return "backlog"
+	end
+	return "all"
+end
+
+-- Opens an issue from the project drawer's milestone tables: its team's board, in a view that shows it,
+-- with no client filters, and the issue's drawer open.
+local function openProjectIssue(state: BlockState, run: Run, issueId: string)
+	local project = state.projectDetail
+	local issues = if project ~= nil then project.issues else nil
+	if issues == nil or not canReload(state, run) then
+		return
+	end
+	for _, issue in issues do
+		if issue.id == issueId then
+			if teamById(state, issue.teamId) == nil then
+				setNotice(state, run, `{issue.identifier} belongs to a team this key cannot see.`)
+				return
+			end
+			state.prefs.scope = "team"
+			state.prefs.teamId = issue.teamId
+			state.prefs.view = viewFor(state.prefs.view, issue.stateType)
+			clearFilters(state)
+			reloadBoard(state, run, true)
+			selectIssue(state, run, issue.id, true, 0)
+			return
+		end
+	end
+end
+
 -- ─── Actions ────────────────────────────────────────────────────────────────
 
 type ActionHandler = (BlockState, Run, string?) -> ()
@@ -2032,6 +2072,20 @@ local ACTIONS: { [string]: ActionHandler } = {
 		local url = if value ~= nil then itemUrl(state, value) else nil
 		if url ~= nil then
 			openUrl(state, run, url)
+		end
+	end,
+	["toggle-milestone"] = function(state, _run, value)
+		if value ~= nil and state.prefs.scope == "projects" then
+			if state.expandedMilestones[value] then
+				state.expandedMilestones[value] = nil
+			else
+				state.expandedMilestones[value] = true
+			end
+		end
+	end,
+	["open-issue"] = function(state, run, value)
+		if value ~= nil and state.prefs.scope == "projects" then
+			openProjectIssue(state, run, value)
 		end
 	end,
 	["copy-id"] = function(state, run, value)

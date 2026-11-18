@@ -18,6 +18,7 @@ local ISSUES_PAGE_SIZE = 50
 local MAX_PROJECTS = 250
 local PROJECTS_PAGE_SIZE = 50
 local MILESTONES_PAGE_SIZE = 50
+local MAX_PROJECT_ISSUES = 250
 -- Teams carry large nested connections: 5 per page keeps the query far below the 10000 complexity cap.
 local TEAMS_PAGE_SIZE = 5
 local COMMENTS_PAGE_SIZE = 50
@@ -559,6 +560,8 @@ local function normalizeProject(raw: Json, detailed: boolean): types.Project
 		lead = normalizeUser(raw.lead),
 		teams = teams,
 		milestones = nil,
+		issues = nil,
+		issuesTruncated = false,
 		detailed = detailed,
 	}
 end
@@ -891,6 +894,88 @@ local function sortMilestones(milestones: { types.ProjectMilestone }): { types.P
 	return milestones
 end
 
+local function normalizeProjectIssue(raw: Json): types.ProjectIssue?
+	if type(raw) ~= "table" then
+		return nil
+	end
+	local id = text(raw.id)
+	local identifier = text(raw.identifier)
+	local state: Json = raw.state
+	local team: Json = raw.team
+	local teamId = if type(team) == "table" then text(team.id) else nil
+	if id == nil or identifier == nil or type(state) ~= "table" or teamId == nil then
+		return nil
+	end
+	local milestone: Json = raw.projectMilestone
+	return {
+		id = id,
+		identifier = identifier,
+		title = text(raw.title) or "",
+		stateName = text(state.name) or "",
+		stateType = text(state.type) or "",
+		sortOrder = number(raw.sortOrder) or 0,
+		teamId = teamId,
+		assignee = normalizeUser(raw.assignee),
+		milestoneId = if type(milestone) == "table" then text(milestone.id) else nil,
+	}
+end
+
+local function sortProjectIssues(issues: { types.ProjectIssue }): { types.ProjectIssue }
+	table.sort(issues, function(a: types.ProjectIssue, b: types.ProjectIssue): boolean
+		local rankA = STATE_RANK[a.stateType] or UNKNOWN_RANK
+		local rankB = STATE_RANK[b.stateType] or UNKNOWN_RANK
+		if rankA ~= rankB then
+			return rankA < rankB
+		end
+		if a.sortOrder ~= b.sortOrder then
+			return a.sortOrder < b.sortOrder
+		end
+		return a.id < b.id
+	end)
+	return issues
+end
+
+-- Pages the project's issues up to MAX_PROJECT_ISSUES; `cb(issues, truncated)` or `cb(nil, false, err)`.
+local function projectIssues(
+	cfg: types.Config,
+	id: string,
+	cb: (issues: { types.ProjectIssue }?, truncated: boolean, err: ApiError?) -> ()
+)
+	local issues: { types.ProjectIssue } = {}
+	local seen: { [string]: boolean } = {}
+	local truncated = false
+	eachPage(cfg, {
+		opName = "ProjectIssues",
+		query = queries.ProjectIssues,
+		variables = { id = id, first = ISSUES_PAGE_SIZE },
+		afterKey = "after",
+	}, function(data)
+		local project: Json = data.project
+		local connection: Json = if type(project) == "table" then project.issues else nil
+		for _, node in nodes(connection) do
+			local issue = normalizeProjectIssue(node)
+			if issue ~= nil and not seen[issue.id] then
+				seen[issue.id] = true
+				table.insert(issues, issue)
+			end
+		end
+		if #issues >= MAX_PROJECT_ISSUES then
+			while #issues > MAX_PROJECT_ISSUES do
+				table.remove(issues)
+			end
+			truncated = type(connection.pageInfo) == "table" and connection.pageInfo.hasNextPage == true
+			return nil
+		end
+		return if type(connection) == "table" then connection.pageInfo else nil
+	end, function(err)
+		if err ~= nil then
+			cb(nil, false, err)
+			return
+		end
+		cb(sortProjectIssues(issues), truncated, nil)
+	end)
+end
+
 function linear.projects(cfg: types.Config, filter: any, cb: types.Callback<types.ProjectPage>)
 	local projects: { types.Project } = {}
 	local seen: { [string]: boolean } = {}
@@ -969,7 +1054,15 @@ function linear.project(cfg: types.Config, id: string, cb: types.Callback<types.
 			return
 		end
 		loaded.milestones = sortMilestones(milestones)
-		cb(loaded, nil)
+		projectIssues(cfg, id, function(issues, truncated, issuesErr)
+			if issues == nil then
+				cb(nil, issuesErr or unexpectedResponse())
+				return
+			end
+			loaded.issues = issues
+			loaded.issuesTruncated = truncated
+			cb(loaded, nil)
+		end)
 	end)
 end
 

@@ -18,6 +18,7 @@ type Relation = types.Relation
 type Comment = types.Comment
 type Project = types.Project
 type ProjectMilestone = types.ProjectMilestone
+type ProjectIssue = types.ProjectIssue
 type Form = types.Form
 type FormField = types.FormField
 type LinkDraft = types.LinkDraft
@@ -1005,28 +1006,131 @@ local function projectDescriptionSection(state: BlockState, project: Project): N
 	return with(ui.md(text.safeMarkdown(body)), { key = "description", role = "linear.description" })
 end
 
-local function milestoneHead(milestone: ProjectMilestone): Node
+-- Group key of the issues that belong to no milestone; the controller toggles it as `toggle-milestone=none`.
+local NO_MILESTONE = "none"
+
+-- The issues of one milestone (`nil` for the issues without a milestone), in their loaded order.
+local function issuesOf(issues: { ProjectIssue }, milestoneId: string?): { ProjectIssue }
+	local out: { ProjectIssue } = {}
+	for _, issue in issues do
+		if issue.milestoneId == milestoneId then
+			table.insert(out, issue)
+		end
+	end
+	return out
+end
+
+-- One issue row. Plain clickable rows instead of `ui.table`: table rows only emit `select`/`activate` events, which the
+-- controller maps to the issue table, while a row node carries its own `open-issue=<id>` click action.
+local function milestoneIssueRow(issue: ProjectIssue): Node
+	local assignee = if issue.assignee ~= nil then userLabel(issue.assignee) else "Unassigned"
+	local children: { Node } = {
+		with(muted(issue.identifier), { key = "id", mark = "id" }),
+		with(ui.text({ issue.title }), { key = "title", mark = "title", grow = 1 }),
+		with(
+			ui.text({ stateDot(issue.stateType), ui.span(" " .. issue.stateName) }),
+			{ key = "status", mark = "status" }
+		),
+		with(muted(assignee), { key = "assignee", mark = "assignee" }),
+	}
+	return ui.node("row", {
+		key = issue.id,
+		role = "linear.milestone-issue",
+		gap = "sm",
+		actions = { click = "open-issue=" .. issue.id },
+	}, children)
+end
+
+local function milestoneIssuesHead(): Node
+	local children: { Node } = {
+		with(muted("ID"), { key = "id", mark = "id" }),
+		with(muted("Title"), { key = "title", mark = "title", grow = 1 }),
+		with(muted("Status"), { key = "status", mark = "status" }),
+		with(muted("Assignee"), { key = "assignee", mark = "assignee" }),
+	}
+	return ui.node("row", { key = "head", role = "linear.milestone-issues-head", gap = "sm" }, children)
+end
+
+-- The issue table of an expanded group: a loading line until the issues arrive, a placeholder for none.
+local function milestoneIssues(issues: { ProjectIssue }?): Node
+	local children: { Node }
+	if issues == nil then
+		children = { loadingLine() }
+	elseif #issues == 0 then
+		children = { with(muted("No issues"), { key = "empty", role = "linear.milestone-empty" }) }
+	else
+		children = { milestoneIssuesHead() }
+		for _, issue in issues do
+			table.insert(children, milestoneIssueRow(issue))
+		end
+	end
+	return with(ui.col(children), { key = "issues", role = "linear.milestone-issues", gap = "xs" })
+end
+
+-- The clickable head of a group: a disclosure chevron, the caller's cells (the `linear.milestone-head` row), and the
+-- issue count (once loaded).
+local function toggleHead(groupId: string, expanded: boolean, cells: { Node }, count: number?): Node
+	local children: { Node } = {
+		with(muted(if expanded then "▾" else "▸"), { key = "chevron", mark = "chevron" }),
+		ui.node("row", { key = "row", role = "linear.milestone-head", gap = "sm", grow = 1 }, cells),
+	}
+	if count ~= nil then
+		table.insert(children, with(muted(tostring(count)), { key = "count", mark = "count", title = "Issues" }))
+	end
+	return ui.node("row", {
+		key = "head",
+		role = "linear.milestone-toggle",
+		gap = "sm",
+		mark = if expanded then "expanded" else nil,
+		actions = { click = "toggle-milestone=" .. groupId },
+	}, children)
+end
+
+local function milestoneHead(milestone: ProjectMilestone, expanded: boolean, count: number?): Node
 	local status = MILESTONE_STATUS[milestone.status] or MILESTONE_STATUS.unstarted
 	local percent = model.progressPercent(milestone.progress)
-	local children: { Node } = {
+	local cells: { Node } = {
 		with(ui.text({ ui.span("●", status.token) }), { key = "status", mark = "status", title = status.label }),
 		with(ui.text({ ui.span(milestone.name, "strong") }), { key = "name", grow = 1 }),
 	}
 	if milestone.targetDate ~= nil then
-		table.insert(children, with(muted(milestone.targetDate), { key = "target", mark = "target" }))
+		table.insert(cells, with(muted(milestone.targetDate), { key = "target", mark = "target" }))
 	end
-	table.insert(children, with(muted(`{percent}%`), { key = "percent", mark = "percent" }))
-	return ui.node("row", { key = "head", role = "linear.milestone-head", gap = "sm" }, children)
+	table.insert(cells, with(muted(`{percent}%`), { key = "percent", mark = "percent" }))
+	return toggleHead(milestone.id, expanded, cells, count)
 end
 
-local function milestoneNode(milestone: ProjectMilestone): Node
-	local children: { Node } = { milestoneHead(milestone) }
+local function milestoneNode(state: BlockState, project: Project, milestone: ProjectMilestone): Node
+	local expanded = state.expandedMilestones[milestone.id] == true
+	local issues = if project.issues ~= nil then issuesOf(project.issues, milestone.id) else nil
+	local children: { Node } = { milestoneHead(milestone, expanded, if issues ~= nil then #issues else nil) }
 	local description = milestone.description
 	if description ~= nil and not isBlank(description) then
 		local body = ui.md(text.safeMarkdown(description))
 		table.insert(children, with(body, { key = "description", role = "linear.milestone-description" }))
 	end
+	if expanded then
+		table.insert(children, milestoneIssues(issues))
+	end
 	return with(ui.col(children), { key = milestone.id, role = "linear.milestone", gap = "xs" })
+end
+
+-- The issues without a milestone, as a group shaped like a milestone; nil while loading or when there are none.
+local function noMilestoneNode(state: BlockState, project: Project): Node?
+	if project.issues == nil then
+		return nil
+	end
+	local issues = issuesOf(project.issues, nil)
+	if #issues == 0 then
+		return nil
+	end
+	local expanded = state.expandedMilestones[NO_MILESTONE] == true
+	local cells: { Node } = { with(ui.text({ ui.span("No milestone", "strong") }), { key = "name", grow = 1 }) }
+	local children: { Node } = { toggleHead(NO_MILESTONE, expanded, cells, #issues) }
+	if expanded then
+		table.insert(children, milestoneIssues(issues))
+	end
+	return with(ui.col(children), { key = NO_MILESTONE, role = "linear.milestone", gap = "xs" })
 end
 
 local function milestonesSection(state: BlockState, project: Project): Node?
@@ -1035,13 +1139,22 @@ local function milestonesSection(state: BlockState, project: Project): Node?
 		return nil
 	end
 	local children: { Node } = { sectionHeading("Milestones", if milestones ~= nil then #milestones else nil) }
+	local issues = project.issues
+	if project.issuesTruncated and issues ~= nil then
+		table.insert(children, with(muted(`Showing first {#issues} issues`), { key = "truncated" }))
+	end
 	if milestones == nil then
 		table.insert(children, loadingLine())
-	elseif #milestones == 0 then
-		table.insert(children, with(muted("No milestones"), { key = "none" }))
 	else
 		for _, milestone in milestones do
-			table.insert(children, milestoneNode(milestone))
+			table.insert(children, milestoneNode(state, project, milestone))
+		end
+		local none = noMilestoneNode(state, project)
+		if none ~= nil then
+			table.insert(children, none)
+		end
+		if #milestones == 0 and none == nil then
+			table.insert(children, with(muted("No milestones"), { key = "none" }))
 		end
 	end
 	return with(ui.col(children), { key = "milestones", role = "linear.milestones" })

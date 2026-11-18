@@ -150,6 +150,20 @@ export type ProjectMilestone = {
 	updatedAt: string,
 }
 
+-- One row of a milestone's issue table in the project drawer.
+export type ProjectIssue = {
+	id: string,
+	identifier: string,
+	title: string,
+	stateName: string,
+	stateType: string,
+	sortOrder: number,
+	teamId: string,
+	assignee: User?,
+	-- nil when the issue has no milestone.
+	milestoneId: string?,
+}
+
 export type Project = {
 	id: string,
 	slugId: string,
@@ -181,6 +195,10 @@ export type Project = {
 	teams: { TeamRef },
 	-- Sorted by (sortOrder, targetDate, createdAt, id); only present after a detail fetch.
 	milestones: { ProjectMilestone }?,
+	-- The project's issues, sorted by (state type rank, sortOrder); only present after a detail fetch.
+	issues: { ProjectIssue }?,
+	-- True when MAX_PROJECT_ISSUES was reached and more issues exist.
+	issuesTruncated: boolean,
 	detailed: boolean,
 }
 
@@ -338,6 +356,9 @@ export type BlockState = {
 	detail: Issue?,
 	-- Full project for the drawer in "projects" scope; nil until loaded.
 	projectDetail: Project?,
+	-- Milestones expanded in the project drawer, by milestone id ("none" is the no-milestone group).
+	-- Cleared when the selection changes.
+	expandedMilestones: { [string]: boolean },
 	detailLoading: boolean,
 	-- Drawer open (selectedId set and user opened details).
 	drawerOpen: boolean,
