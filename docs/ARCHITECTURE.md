@@ -163,7 +163,7 @@ Exports `controller.def: BlockDef<BlockState>` with `font = "sans"`, `features =
 - `title` returns `"Linear"`, or `"Linear · <TEAM KEY>"` / `"Linear · My issues"` / `"Linear · Projects"` once ready.
 - `init` resolves credentials: none → `phase = "setup"`, focus the key field; otherwise `phase = "loading"`, foreground load (`viewer` → `teams` → `issues`, or `projects` in Projects scope).
 
-Projects scope (`prefs.scope == "projects"`) loads `state.projects` instead of `state.issues` and keeps the drawer's project in `state.projectDetail` (separate from `state.detail`). Issue mutations and their keys do nothing in this scope, and `v` (layout) is ignored: projects always render as status columns of cards.
+Projects scope (`prefs.scope == "projects"`) loads `state.projects` instead of `state.issues` and keeps the drawer's project in `state.projectDetail` (separate from `state.detail`). While a project is selected, issue mutations and their keys do nothing, and `v` (layout) is ignored: projects always render as status columns of cards. An issue opened from a milestone table sets `state.returnProjectId` to the project and `selectedId` to the issue: the drawer then shows the full issue drawer (all issue actions and keys work) with a back button, the board stays on Projects, and Escape, the back button or closing the drawer restores the project selection. The controller's local `projectSelected(state)` is the single test for "selectedId names a project".
 
 Request discipline (learned from beads-tern):
 
@@ -213,7 +213,8 @@ Views attach `actions = { click = "<act>=<value>" }`. Tern splits at the first `
 | `select=<issueId>` | select and open the drawer (a project id in Projects scope) |
 | `close-detail` | close the drawer |
 | `toggle-milestone=<milestoneId>` | expand or collapse a milestone's issue table in the project drawer (`none`: the No milestone group) |
-| `open-issue=<issueId>` | from a milestone table: switch to the issue's team (view chosen so its state type shows, client filters cleared) and open its drawer |
+| `open-issue=<issueId>` | from a milestone table: show that issue in the drawer, staying on the Projects board |
+| `back-to-project` | from such an issue: show its project in the drawer again |
 | `open-url=<issueId>` | `cx:open` only when the issue's (or, in Projects scope, the project's) `url` matches `^https://linear%.app/`; otherwise a notice |
 | `copy-id=<issueId>` / `copy-branch=<issueId>` | `cx:copy` identifier / branch name |
 | `set-state=<stateId>` | update the selected issue's state |
@@ -260,7 +261,7 @@ The controller routes by `state.focus`. Global keys (no field focused, no ctrl/m
 | `j` / `down`, `k` / `up` | select next / previous visible issue or project (opens nothing) |
 | `h` / `left`, `l` / `right` | board: first issue of previous / next column |
 | `enter` | open the drawer for the selection (nothing when the drawer is already open) |
-| `escape` | cancel the open form, else the link input, else close the drawer, else clear the selection |
+| `escape` | cancel the open form, else the link input, else go back from an issue opened from a project, else close the drawer, else clear the selection |
 | `n` | create dialog |
 | `e` | edit selected |
 | `c` | focus comment (drawer open) |
@@ -313,6 +314,7 @@ E2E tests, CSS and screenshots rely on these. Every node listed carries `role` (
 | `linear.milestones` | project drawer milestones section | heading `Milestones` |
 | `linear.milestone`, `linear.milestone-head`, `linear.milestone-description` | one milestone; its name, target date and percent; its markdown description | |
 | `linear.milestone-toggle`, `linear.milestone-issues`, `linear.milestone-issue`, `linear.milestone-empty` | milestone expand toggle; its issue table; one issue row (ID, title, status, assignee); empty table | `No milestone` group name; `No issues` |
+| `linear.back-to-project` | drawer button on an issue opened from a project | the project's name |
 | `linear.relations` | relations section | `Blocked by`, `Blocks`, `Related` |
 | `linear.link-input` | link input | placeholder `ENG-123` |
 | `linear.comments` | comments section | heading `Comments` |

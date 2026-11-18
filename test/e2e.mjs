@@ -393,23 +393,30 @@ async function scenario() {
 		await t.waitFor(role("milestones"), "No milestone");
 		await runner.shot(label);
 
-		// A row of another team opens that team's board with the issue's drawer.
+		// A row opens that issue in the drawer, staying on the projects board; Escape returns to the project.
 		const detail = mark();
 		const target = (await nodesOf(role("milestone-issue"))).find((row) => (row.text ?? "").startsWith("DES-12"));
 		const [x, y, width, height] = target.rect;
 		await t.ctl(`click ${x + width / 2} ${y + height / 2}`);
-		await t.waitFor(role("team-select"), "DES");
-		await present(role("board"));
-		await absent(role("projects-board"));
 		await t.waitFor(role("drawer"), "DES-12");
 		await t.waitFor(role("drawer"), issueNamed("DES-12").title);
 		await waitFor(() => opsSince(detail, "Issue").length > 0, { what: "the Issue detail request" });
-		if (!opsSince(detail, "Issues").some((op) => JSON.stringify(op.variables.filter).includes('"team"'))) {
-			throw new Error("no team-scoped Issues request after opening the issue");
-		}
+		await t.waitFor(role("back-to-project"), "Desktop app");
+		await t.waitFor(role("team-select"), "Projects");
+		await present(role("projects-board"));
+		if (opsSince(detail, "Issues").length > 0) throw new Error("opening a milestone issue reloaded an issue board");
+		// The issue drawer stays put after the board settles.
+		await t.wait(500);
+		await t.waitFor(role("drawer"), "DES-12");
 		await runner.shot("project-milestone-issue-drawer");
 
+		await t.key("escape");
+		await t.waitFor(role("drawer"), "GA release");
+		await absent(role("back-to-project"));
+		await present(role("milestone-issue"));
+
 		await closeDrawer();
+		await clearSearch("desktop".length);
 		await t.key("m");
 		await see("Crash when opening large workspace");
 		await present(role("board"));

@@ -358,15 +358,35 @@ local function iconButton(key: string, icon: string, title: string, action: stri
 	})
 end
 
-local function closeButton(): Node
+-- `esc` is shown on the close button unless a back button owns it.
+local function closeButton(esc: boolean): Node
 	return ui.button("", {
 		key = "close",
 		icon = "x",
 		size = "sm",
 		variant = "quiet",
 		title = "Close",
-		keys = { "esc" },
+		keys = if esc then { "esc" } else nil,
 		actions = { click = "close-detail" },
+	})
+end
+
+-- Back from an issue opened from a project's milestone tables to that project.
+local function backButton(state: BlockState): Node?
+	if state.returnProjectId == nil then
+		return nil
+	end
+	local project = state.projectDetail
+	local label = if project ~= nil and project.id == state.returnProjectId then project.name else "Project"
+	return ui.button(label, {
+		key = "back",
+		role = "linear.back-to-project",
+		icon = "arrow-left",
+		size = "sm",
+		variant = "quiet",
+		title = "Back to project",
+		keys = { "esc" },
+		actions = { click = "back-to-project" },
 	})
 end
 
@@ -899,7 +919,11 @@ local function drawer(state: BlockState, cx: BlockCx, issue: Issue): Node
 	local form = state.form
 	local editing = form ~= nil and form.kind == "edit" and form.issueId == issue.id
 
-	local children: { Node } = { closeButton() }
+	local children: { Node } = { closeButton(state.returnProjectId == nil) }
+	local back = backButton(state)
+	if back ~= nil then
+		table.insert(children, back)
+	end
 	if form ~= nil and editing then
 		table.insert(children, editForm(state, form))
 	else
@@ -1162,7 +1186,7 @@ end
 
 local function projectDrawer(state: BlockState, cx: BlockCx, project: Project): Node
 	local children: { Node } = {
-		closeButton(),
+		closeButton(true),
 		projectHeader(project),
 		projectActionRow(project),
 		projectProps(project),
@@ -1187,6 +1211,39 @@ local function projectDrawer(state: BlockState, cx: BlockCx, project: Project): 
 	}, children)
 end
 
+-- An issue opened from a milestone table before its detail arrives: the row's identifier and title.
+local function issueLoadingDrawer(state: BlockState, cx: BlockCx): Node
+	local project = state.projectDetail
+	local issues: { ProjectIssue } = if project ~= nil and project.issues ~= nil then project.issues else {}
+	local row: ProjectIssue? = nil
+	for _, issue in issues do
+		if issue.id == state.selectedId then
+			row = issue
+		end
+	end
+	local children: { Node } = { closeButton(false) }
+	local back = backButton(state)
+	if back ~= nil then
+		table.insert(children, back)
+	end
+	if row ~= nil then
+		table.insert(
+			children,
+			with(ui.text({ ui.span(row.title, "strong") }), { key = "title", role = "linear.title" })
+		)
+	end
+	table.insert(children, loadingLine())
+	return ui.node("overlay", {
+		key = "panel",
+		role = "linear.drawer",
+		side = "right",
+		size = drawerSize(cx.cols),
+		head = if row ~= nil then row.identifier else "Issue",
+		meta = if row ~= nil then row.stateName else nil,
+		["end"] = PANEL .. ".close",
+	}, children)
+end
+
 -- ─── Layer ──────────────────────────────────────────────────────────────────
 
 function detail.layer(state: BlockState, cx: BlockCx): Node?
@@ -1195,7 +1252,7 @@ function detail.layer(state: BlockState, cx: BlockCx): Node?
 	if form ~= nil and form.kind == "create" then
 		panel = dialog(state, form)
 	elseif state.drawerOpen and state.selectedId ~= nil then
-		if state.prefs.scope == "projects" then
+		if state.prefs.scope == "projects" and state.returnProjectId == nil then
 			local project = currentProject(state)
 			if project then
 				panel = projectDrawer(state, cx, project)
@@ -1204,6 +1261,8 @@ function detail.layer(state: BlockState, cx: BlockCx): Node?
 			local issue = currentIssue(state)
 			if issue then
 				panel = drawer(state, cx, issue)
+			elseif state.returnProjectId ~= nil then
+				panel = issueLoadingDrawer(state, cx)
 			end
 		end
 	end

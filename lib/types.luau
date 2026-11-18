@@ -356,6 +356,9 @@ export type BlockState = {
 	detail: Issue?,
 	-- Full project for the drawer in "projects" scope; nil until loaded.
 	projectDetail: Project?,
+	-- Projects scope: set while the drawer shows an issue opened from this project's milestone tables.
+	-- `selectedId` is then the issue's id; going back restores the project.
+	returnProjectId: string?,
 	-- Milestones expanded in the project drawer, by milestone id ("none" is the no-milestone group).
 	-- Cleared when the selection changes.
 	expandedMilestones: { [string]: boolean },

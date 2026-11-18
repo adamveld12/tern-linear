@@ -844,7 +844,7 @@ local function projectBoard(state: BlockState, cx: BlockCx, visible: { Project }
 	local lines = columnLines(state, cx)
 	local children: { Node } = {}
 	for _, column in columns do
-		table.insert(children, projectColumn(column, state.selectedId, lines))
+		table.insert(children, projectColumn(column, state.returnProjectId or state.selectedId, lines))
 	end
 	return ui.node("row", { key = "content", role = "linear.projects-board", gap = "md", align = "start" }, children)
 end

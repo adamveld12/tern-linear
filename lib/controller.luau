@@ -198,6 +198,7 @@ local function newState(cx: BlockCx, prefs: Prefs): BlockState
 		detail = nil,
 		projectDetail = nil,
 		expandedMilestones = {},
+		returnProjectId = nil,
 		detailLoading = false,
 		drawerOpen = false,
 		comment = text.new(""),
@@ -240,10 +241,15 @@ local function findProject(state: BlockState, id: string): Project?
 	return nil
 end
 
--- Projects scope selects projects, never issues: every issue action finds nothing to act on there.
+-- True when `selectedId` names a project: Projects scope, unless the drawer shows an issue opened from a milestone.
+local function projectSelected(state: BlockState): boolean
+	return state.prefs.scope == "projects" and state.returnProjectId == nil
+end
+
+-- While a project is selected every issue action finds nothing to act on.
 local function selectedIssue(state: BlockState): Issue?
 	local id = state.selectedId
-	if id == nil or state.prefs.scope == "projects" then
+	if id == nil or projectSelected(state) then
 		return nil
 	end
 	return findIssue(state, id)
@@ -386,10 +392,18 @@ local function supersedeDetail(state: BlockState, run: Run)
 	state.detailLoading = false
 end
 
+-- Closing an issue opened from a project leaves that project selected.
 local function closeDrawer(state: BlockState, run: Run)
 	state.drawerOpen = false
 	supersedeDetail(state, run)
 	dropDrawerInputs(state, run)
+	local projectId = state.returnProjectId
+	if projectId ~= nil then
+		state.returnProjectId = nil
+		state.selectedId = projectId
+		state.detail = nil
+		text.set(state.comment, "")
+	end
 end
 
 local function clearSelection(state: BlockState, run: Run)
@@ -546,7 +560,8 @@ local function commitProjects(state: BlockState, run: Run, page: types.ProjectPa
 	end
 	state.maxUpdatedAt = newest
 	run.lastFullAt = tern.now()
-	local id = state.selectedId
+	-- An issue opened from a milestone keeps the selection while its project is still listed.
+	local id = state.returnProjectId or state.selectedId
 	if id ~= nil and findProject(state, id) == nil and not state.detailLoading then
 		clearSelection(state, run)
 	end
@@ -557,9 +572,9 @@ end
 
 local openEditForm: (state: BlockState) -> ()
 
--- Drops the loaded detail (the project's in Projects scope, else the issue's) of an earlier selection.
+-- Drops the loaded detail (the project's while a project is selected, else the issue's) of an earlier selection.
 local function dropStaleDetail(state: BlockState, id: string)
-	if state.prefs.scope == "projects" then
+	if projectSelected(state) then
 		local project = state.projectDetail
 		if project ~= nil and project.id ~= id then
 			state.projectDetail = nil
@@ -573,7 +588,7 @@ local function dropStaleDetail(state: BlockState, id: string)
 end
 
 local function hasDetail(state: BlockState): boolean
-	if state.prefs.scope == "projects" then
+	if projectSelected(state) then
 		return state.projectDetail ~= nil
 	end
 	return state.detail ~= nil
@@ -587,7 +602,7 @@ local function fetchDetail(state: BlockState, run: Run)
 	end
 	run.detailToken += 1
 	local token = run.detailToken
-	if state.prefs.scope == "projects" then
+	if projectSelected(state) then
 		linear.project(cfg, id, function(project, err)
 			local live = liveRun(state)
 			if live == nil or live.detailToken ~= token then
@@ -666,6 +681,7 @@ end
 local function selectIssue(state: BlockState, run: Run, id: string, open: boolean, delayMs: number)
 	local changed = state.selectedId ~= id
 	if changed then
+		state.returnProjectId = nil
 		state.selectedId = id
 		text.set(state.comment, "")
 		dropDrawerInputs(state, run)
@@ -1959,9 +1975,9 @@ local function openUrl(state: BlockState, run: Run, url: string)
 	end
 end
 
--- The Linear URL of an issue, or of a project in Projects scope.
+-- The Linear URL of the selected issue or project.
 local function itemUrl(state: BlockState, id: string): string?
-	if state.prefs.scope == "projects" then
+	if projectSelected(state) then
 		local project = findProject(state, id)
 		return if project ~= nil then project.url else nil
 	end
@@ -1969,41 +1985,43 @@ local function itemUrl(state: BlockState, id: string): string?
 	return if issue ~= nil then issue.url else nil
 end
 
--- The view whose state types include `stateType`: the current one when it does, else active, backlog, all.
-local function viewFor(current: "active" | "backlog" | "all", stateType: string): "active" | "backlog" | "all"
-	if table.find(model.viewTypes(current), stateType) ~= nil then
-		return current
-	elseif table.find(model.viewTypes("active"), stateType) ~= nil then
-		return "active"
-	elseif table.find(model.viewTypes("backlog"), stateType) ~= nil then
-		return "backlog"
-	end
-	return "all"
-end
-
--- Opens an issue from the project drawer's milestone tables: its team's board, in a view that shows it,
--- with no client filters, and the issue's drawer open.
+-- Shows an issue from the project drawer's milestone tables in the drawer, staying on the projects board.
 local function openProjectIssue(state: BlockState, run: Run, issueId: string)
 	local project = state.projectDetail
 	local issues = if project ~= nil then project.issues else nil
-	if issues == nil or not canReload(state, run) then
+	if project == nil or issues == nil or not projectSelected(state) or project.id ~= state.selectedId then
 		return
 	end
 	for _, issue in issues do
 		if issue.id == issueId then
-			if teamById(state, issue.teamId) == nil then
-				setNotice(state, run, `{issue.identifier} belongs to a team this key cannot see.`)
-				return
-			end
-			state.prefs.scope = "team"
-			state.prefs.teamId = issue.teamId
-			state.prefs.view = viewFor(state.prefs.view, issue.stateType)
-			clearFilters(state)
-			reloadBoard(state, run, true)
-			selectIssue(state, run, issue.id, true, 0)
+			dropDrawerInputs(state, run)
+			supersedeDetail(state, run)
+			text.set(state.comment, "")
+			state.returnProjectId = project.id
+			state.selectedId = issue.id
+			state.detail = nil
+			state.drawerOpen = true
+			requestDetail(state, run, 0)
 			return
 		end
 	end
+end
+
+-- Returns the drawer from an issue opened from a milestone to its project; false when no issue is open that way.
+local function backToProject(state: BlockState, run: Run): boolean
+	local projectId = state.returnProjectId
+	if projectId == nil then
+		return false
+	end
+	dropDrawerInputs(state, run)
+	supersedeDetail(state, run)
+	text.set(state.comment, "")
+	state.returnProjectId = nil
+	state.selectedId = projectId
+	state.detail = nil
+	state.drawerOpen = true
+	requestDetail(state, run, 0)
+	return true
 end
 
 -- ─── Actions ────────────────────────────────────────────────────────────────
@@ -2082,6 +2100,9 @@ local ACTIONS: { [string]: ActionHandler } = {
 				state.expandedMilestones[value] = true
 			end
 		end
+	end,
+	["back-to-project"] = function(state, run, _value)
+		backToProject(state, run)
 	end,
 	["open-issue"] = function(state, run, value)
 		if value ~= nil and state.prefs.scope == "projects" then
@@ -2379,6 +2400,8 @@ local function escapeKey(state: BlockState, run: Run): boolean
 		cancelForm(state, run)
 	elseif state.link ~= nil then
 		cancelLink(state)
+	elseif backToProject(state, run) then
+		return true
 	elseif state.drawerOpen then
 		closeDrawer(state, run)
 	elseif state.selectedId ~= nil then
@@ -2438,7 +2461,7 @@ local KEYS: { [string]: KeyHandler } = {
 		beginEdit(state, run)
 	end),
 	["c"] = function(state, _run)
-		if not state.drawerOpen or state.form ~= nil or state.prefs.scope == "projects" then
+		if not state.drawerOpen or state.form ~= nil or projectSelected(state) then
 			return false
 		end
 		setFocus(state, "comment")
