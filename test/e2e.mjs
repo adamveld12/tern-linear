@@ -362,6 +362,8 @@ async function scenario() {
 		await t.click(role("project-card"));
 		await present(role("drawer"));
 		await t.waitFor(role("milestones"), "GA release");
+		// Milestone progress arrives as a percentage; "Keyboard & board polish" is 55% done, not 100%.
+		await t.waitFor(role("milestones"), "55%");
 		const loaded = await waitFor(() => opsSince(before, "ProjectIssues")[0], { what: "the ProjectIssues request" });
 		if (typeof loaded.variables.id !== "string" || loaded.variables.id === "") throw new Error("ProjectIssues was sent without a project id");
 

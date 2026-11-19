@@ -600,7 +600,8 @@ function build(now) {
 			name: m.name,
 			description: m.description,
 			status: m.status,
-			progress: m.progress,
+			// Linear's ProjectMilestone.progress is a percentage (0..100); fixture values are fractions.
+			progress: Math.round(m.progress * 10000) / 100,
 			sortOrder: order * 1000,
 			targetDate: dayOffset(m.target),
 			createdAt: ago(p.created),

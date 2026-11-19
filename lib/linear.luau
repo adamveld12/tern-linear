@@ -508,7 +508,8 @@ local function normalizeMilestone(raw: Json): types.ProjectMilestone?
 		name = name,
 		description = text(raw.description),
 		status = text(raw.status) or "unstarted",
-		progress = number(raw.progress) or 0,
+		-- Linear reports milestone progress as a percentage (0..100), unlike Project.progress (0..1).
+		progress = math.clamp((number(raw.progress) or 0) / 100, 0, 1),
 		sortOrder = number(raw.sortOrder) or 0,
 		targetDate = text(raw.targetDate),
 		createdAt = text(raw.createdAt) or "",
